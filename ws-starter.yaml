@@ -1,0 +1,403 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A stack that creates the resources required to complete the Amazon API Gateway WebSocket tutorial.
+
+Resources:
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+  ConnectHandlerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  ConnectHandlerServiceRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - dynamodb:BatchWriteItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectionsTable
+                  - Arn
+              - Ref: AWS::NoValue
+        Version: "2012-10-17"
+      PolicyName: ConnectHandlerServiceRoleDefaultPolicy
+      Roles:
+        - Ref: ConnectHandlerServiceRole
+  ConnectHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          import json
+          import logging
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel("INFO")
+
+          ddb_client = boto3.client('dynamodb')
+
+          def lambda_handler(event, context):
+              try:
+                  item = {
+                      'connectionId': {
+                          'S': event['requestContext']['connectionId']
+                      }
+                  }
+
+
+                  put_item(
+                      table_name=os.environ['TABLE_NAME'],
+                      item=item
+                  )
+              except Exception as e:
+                  logger.error("Something went wrong with putting the connection ID into the table! Here's what: %s", e)
+                  return {
+                      'statusCode': 500
+                  }
+              
+              return {
+                  'statusCode': 200
+              }
+
+          def put_item(table_name, item):
+              try:
+                  ddb_client.put_item(
+                      TableName=table_name,
+                      Item=item
+                  )
+                  logger.info(
+                      "Connection ID added to table: %s",
+                      json.dumps(item)
+                  )
+              except ClientError as err:
+                  logger.error(
+                      "Couldn't add item %s to table %s. Here's why: %s: %s",
+                      json.dumps(item),
+                      table_name,
+                      err.response["Error"]["Code"],
+                      err.response["Error"]["Message"],
+                  )
+                  raise
+      Role:
+        Fn::GetAtt:
+          - ConnectHandlerServiceRole
+          - Arn
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Ref: ConnectionsTable
+      Handler: index.lambda_handler
+      Timeout: 5
+      Runtime: python3.12
+    DependsOn:
+      - ConnectHandlerServiceRoleDefaultPolicy
+      - ConnectHandlerServiceRole
+  DisconnectHandlerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  DisconnectHandlerServiceRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - dynamodb:BatchWriteItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectionsTable
+                  - Arn
+              - Ref: AWS::NoValue
+        Version: "2012-10-17"
+      PolicyName: DisconnectHandlerServiceRoleDefaultPolicy
+      Roles:
+        - Ref: DisconnectHandlerServiceRole
+  DisconnectHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          import json
+          import logging
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel("INFO")
+
+          ddb_client = boto3.client('dynamodb')
+
+          def lambda_handler(event, context):
+              try:
+                  item = {
+                      'connectionId': {
+                          'S': event['requestContext']['connectionId']
+                      }
+                  }
+                  
+                  delete_item(
+                      table_name=os.environ['TABLE_NAME'],
+                      item=item
+                  )
+              except Exception as e:
+                  logger.error("Something went wrong with deleting the item from the table! Here's what: %s", e)
+                  return {
+                      'statusCode': 500
+                  }
+              
+              return {
+                  'statusCode': 200
+              }
+
+          def delete_item(table_name, item):
+              try:
+                  ddb_client.delete_item(
+                      TableName=table_name,
+                      Key=item
+                  )
+                  logger.info(
+                      "Connection ID removed from table: %s",
+                      json.dumps(item)
+                  )
+              except ClientError as err:
+                  logger.error(
+                      "Couldn't delete item %s from table %s. Here's why: %s: %s",
+                      json.dumps(item),
+                      table_name,
+                      err.response["Error"]["Code"],
+                      err.response["Error"]["Message"],
+                  )
+                  raise
+      Role:
+        Fn::GetAtt:
+          - DisconnectHandlerServiceRole
+          - Arn
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Ref: ConnectionsTable
+      Handler: index.lambda_handler
+      Runtime: python3.12
+    DependsOn:
+      - DisconnectHandlerServiceRoleDefaultPolicy
+      - DisconnectHandlerServiceRole
+  SendMessageHandlerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  SendMessageHandlerServiceRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:Query
+              - dynamodb:GetItem
+              - dynamodb:Scan
+              - dynamodb:ConditionCheckItem
+              - dynamodb:DescribeTable
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectionsTable
+                  - Arn
+              - Ref: AWS::NoValue
+        Version: "2012-10-17"
+      PolicyName: SendMessageHandlerServiceRoleDefaultPolicy
+      Roles:
+        - Ref: SendMessageHandlerServiceRole
+  SendMessageHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          import json
+          import logging
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel("INFO")
+
+          ddb_client = boto3.client('dynamodb')
+
+          def lambda_handler(event, context):
+              logger.info("Lambda triggered with event: %s", json.dumps(event))
+              try:
+                  if isinstance(event, str):
+                      event = json.loads(event)
+                  if 'body' in event:
+                      body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+                  else:
+                      body = event
+                  logger.info("Parsed body: %s", json.dumps(body))
+
+                  message = body.get("message")
+                  apigw_endpoint = body.get("apigw_endpoint")
+
+                  if not message or not apigw_endpoint:
+                      return {
+                          "statusCode": 400,
+                          "body": json.dumps({"error": "Missing message or apigw_endpoint"})
+                      }
+
+                  logger.info("Scanning table %s for connection IDs...", os.environ['TABLE_NAME'])
+                  connection_ids = scan_table(os.environ['TABLE_NAME'])
+                  logger.info("Found %d connections", len(connection_ids['Items']))
+              except Exception as e:
+                  logger.error("Error preparing message dispatch: %s", e)
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({"error": str(e)})
+                  }
+
+              apigateway_client = boto3.client(
+                  'apigatewaymanagementapi',
+                  endpoint_url=apigw_endpoint
+              )
+
+              for connection_id in connection_ids['Items']:
+                  try:
+                      send_message(
+                          apigateway_client,
+                          connection_id['connectionId']['S'],
+                          message
+                      )
+                  except Exception as e:
+                      logger.error("Sending message to connection ID %s failed: %s", connection_id, e)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({"status": "Message sent"})
+              }
+
+          def scan_table(table_name):
+              try:
+                  response = ddb_client.scan(TableName=table_name)
+                  logger.info("Scanned table: %s", table_name)
+                  return response
+              except ClientError as err:
+                  logger.error("Couldn't scan table %s: %s", table_name, err)
+                  raise
+
+          def send_message(apigateway_client, connection_id, message):
+              try:
+                  response = apigateway_client.post_to_connection(
+                      Data=message.encode('utf-8'),
+                      ConnectionId=connection_id
+                  )
+                  logger.info("Message sent: %s", response)
+              except ClientError as err:
+                  logger.error("Failed to send to %s: %s", connection_id, err)
+                  raise
+      Role:
+        Fn::GetAtt:
+          - SendMessageHandlerServiceRole
+          - Arn
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Ref: ConnectionsTable
+      Handler: index.lambda_handler
+      Runtime: python3.12
+    DependsOn:
+      - SendMessageHandlerServiceRoleDefaultPolicy
+      - SendMessageHandlerServiceRole
+  manageConnections:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: execute-api:ManageConnections
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - "arn:aws:execute-api:"
+                  - Ref: AWS::Region
+                  - ":"
+                  - Ref: AWS::AccountId
+                  - ":"
+                  - "*/*/POST/@connections/*"
+        Version: "2012-10-17"
+      PolicyName: manageConnections7F91357B
+      Roles:
+        - Ref: SendMessageHandlerServiceRole
+
+Outputs:
+  ConnectHandlerFunction:
+    Description: Lambda function for the $connect route of the WebSocket API
+    Value: !GetAtt 'ConnectHandler.Arn'
+  DisconnectHandlerFunction:
+    Description: Lambda function for the $disconnect route of the WebSocket API
+    Value: !GetAtt 'DisconnectHandler.Arn'
+  SendMessageHandlerFunction:
+    Description: Lambda function for the sendMessage route of the WebSocket API
+    Value: !GetAtt 'SendMessageHandler.Arn'
