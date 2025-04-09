@@ -36,7 +36,7 @@ A **Golang WebSocket client** that:
 
 ```bash
 aws cloudformation deploy \
-  --template-file cloudformation-template.yaml \
+  --template-file ws-starter.yaml \
   --stack-name websocket-chat-demo \
   --capabilities CAPABILITY_IAM
 ```
