@@ -10,17 +10,31 @@ import (
 	"github.com/coder/websocket"
 )
 
+type ConnectionInfoPayload struct {
+	OperationType string `json:"operationType"`
+	ConnectionID  string `json:"connectionId"`
+}
+
 type Message struct {
-	Type    string  `json:"type"`
-	Payload Payload `json:"payload"`
+	Action        string          `json:"action"`
+	ConnectionID  string          `json:"connectionId"`
+	OperationType string          `json:"operationType"` // e.g., "pairing", "signing"
+	Message       json.RawMessage `json:"message"`       // decode based on operationType
 }
 
-type Payload struct {
-	User    string `json:"user"`
-	Message string `json:"message"`
+// Define payloads
+
+type PairingPayload struct {
+	DeviceID string `json:"deviceId"`
+	User     string `json:"user"`
 }
 
-const wsURL = "wss://l20rbivjj2.execute-api.ap-southeast-1.amazonaws.com/production/" // Replace this with your endpoint
+type SigningPayload struct {
+	TxID      string `json:"txId"`
+	Signature string `json:"signature"`
+}
+
+const wsURL = "wss://bo1s63drod.execute-api.ap-southeast-1.amazonaws.com/production/"
 
 func main() {
 	for {
@@ -46,7 +60,7 @@ func connectAndListen() error {
 
 	log.Println("✅ Connected to WebSocket server")
 
-	// Start pinging in background to keep connection alive
+	// 🔁 Keep connection alive
 	go func() {
 		ticker := time.NewTicker(4 * time.Minute)
 		defer ticker.Stop()
@@ -73,6 +87,25 @@ func connectAndListen() error {
 			continue
 		}
 
-		fmt.Printf("📨 Message from %s: %s\n", msg.Payload.User, msg.Payload.Message)
+		switch msg.OperationType {
+		case "pairing":
+			var payload PairingPayload
+			if err := json.Unmarshal(msg.Message, &payload); err != nil {
+				log.Printf("❌ PairingPayload unmarshal error: %v", err)
+				continue
+			}
+			fmt.Printf("🔗 Pairing: device=%s user=%s\n", payload.DeviceID, payload.User)
+
+		case "signing":
+			var payload SigningPayload
+			if err := json.Unmarshal(msg.Message, &payload); err != nil {
+				log.Printf("❌ SigningPayload unmarshal error: %v", err)
+				continue
+			}
+			fmt.Printf("✍️ Signing: txId=%s signature=%s\n", payload.TxID, payload.Signature)
+
+		default:
+			log.Printf("⚠️ Unknown operation type: %s", msg.OperationType)
+		}
 	}
 }

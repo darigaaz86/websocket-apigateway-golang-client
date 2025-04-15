@@ -1,6 +1,6 @@
 # 🛰️ AWS WebSocket Chat Demo
 
-This project demonstrates a basic real-time messaging system using **AWS API Gateway WebSocket**, **AWS Lambda**, **DynamoDB**, and a **Golang WebSocket client**. It allows multiple clients to connect and receive broadcast messages in real-time.
+This project demonstrates a basic real-time messaging system using **AWS API Gateway WebSocket**, **AWS Lambda**, **DynamoDB**, and a **Golang WebSocket client**. It allows multiple clients to connect and receive broadcast or direct messages in real-time.
 
 ---
 
@@ -10,15 +10,17 @@ This project demonstrates a basic real-time messaging system using **AWS API Gat
 A CloudFormation template that creates:
 
 - A **DynamoDB** table for tracking WebSocket connections
-- Three **Lambda functions**:
-  - `$connect`: Adds a new connection ID to DynamoDB
+- Four **Lambda functions**:
+  - `$connect`: Adds a new connection ID to DynamoDB and optionally sends it to the client
   - `$disconnect`: Removes the connection ID when the client disconnects
-  - `sendMessage`: Scans all active connections and sends a message to each one
+  - `sendMessage`: Scans all active connections and sends a broadcast message
+  - `sendDirect`: Sends a direct message to a specific connection ID
 - **IAM roles** and policies for the Lambda functions
 
 ### 2. `main.go`
 A **Golang WebSocket client** that:
 - Connects to the WebSocket API Gateway
+- Sends an initial `getConnectionId` request
 - Maintains the connection with regular pings
 - Listens for incoming messages and prints them in the format:
 
@@ -43,13 +45,43 @@ aws cloudformation deploy \
 
 2. After deployment, create an **Amazon API Gateway WebSocket API** and set the routes:
 
-| Route         | Integration Target             |
-|---------------|-------------------------------|
-| `$connect`    | ConnectHandler Lambda ARN      |
-| `$disconnect` | DisconnectHandler Lambda ARN   |
-| `sendMessage` | SendMessageHandler Lambda ARN  |
+| Route             | Integration Target                |
+|-------------------|-----------------------------------|
+| `$connect`        | ConnectHandler Lambda ARN         |
+| `$disconnect`     | DisconnectHandler Lambda ARN      |
+| `sendMessage`     | SendMessageHandler Lambda ARN     |
+| `sendDirect`      | SendDirectHandler Lambda ARN      |
+| `getConnectionId` | GetConnectionIdHandler Lambda ARN |
 
 3. Deploy the WebSocket API to a stage (e.g., `production`) and grab the **WebSocket endpoint URL**.
+
+---
+
+## 🔄 Message Flow
+
+1. 🔎 **Get your connection ID**  
+   After your client connects to the WebSocket server, send this message:
+
+   ```json
+   { "action": "getConnectionId" }
+   ```
+
+   The server will reply with your connection ID. You can share it with another client for direct messaging.
+
+2. ✉️ **Send a direct message**  
+   Once you have another client’s connection ID, use the following format:
+
+   ```json
+   {
+     "action": "sendDirect",
+     "connectionId": "JDH-3ejISQ0CFlw=",
+     "operationType": "signing",
+     "message": {
+       "txId": "abc123",
+       "signature": "0xdeadbeef"
+     }
+   }
+   ```
 
 ---
 
@@ -86,7 +118,7 @@ You can trigger the `sendMessage` Lambda manually via:
 ```bash
 aws lambda invoke \
   --function-name <SendMessageHandler Lambda Name> \
-  --payload '{"message": "Hello from CLI!", "apigw_endpoint": "https://<your-api-id>.execute-api.<region>.amazonaws.com/production"}' \
+  --payload '{"action": "sendmessage", "message": "Hello from CLI!", "apigw_endpoint": "https://<your-api-id>.execute-api.<region>.amazonaws.com/production"}' \
   output.json
 ```
 
