@@ -11,10 +11,10 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       KeySchema:
-        - AttributeName: connectionId
+        - AttributeName: id
           KeyType: HASH
       AttributeDefinitions:
-        - AttributeName: connectionId
+        - AttributeName: id
           AttributeType: S
       ProvisionedThroughput:
         ReadCapacityUnits: 5
@@ -76,44 +76,29 @@ Resources:
 
           def lambda_handler(event, context):
               try:
-                  item = {
-                      'connectionId': {
-                          'S': event['requestContext']['connectionId']
-                      }
-                  }
-                  put_item(
-                      table_name=os.environ['TABLE_NAME'],
-                      item=item
-                  )
+                  params = event.get('queryStringParameters') or {}
+                  if params.get('type') == "cli" and params.get('cliId'):
+                      ddb_client.put_item(
+                          TableName=os.environ['TABLE_NAME'],
+                          Item={
+                              'id': {'S': params['cliId']},
+                              'connectionId': {'S': event['requestContext']['connectionId']}
+                          }
+                      )
+                      logger.info("Stored: %s", json.dumps(params))
+                  if params.get('type') == "mpc" and params.get('mpcId'):
+                      ddb_client.put_item(
+                          TableName=os.environ['TABLE_NAME'],
+                          Item={
+                              'id': {'S': params['mpcId']},
+                              'connectionId': {'S': event['requestContext']['connectionId']}
+                          }
+                      )
+                      logger.info("Stored: %s", json.dumps(params))
+                  return {'statusCode': 200}
               except Exception as e:
-                  logger.error("Something went wrong with putting the connection ID into the table! Here's what: %s", e)
-                  return {
-                      'statusCode': 500
-                  }
-              
-              return {
-                  'statusCode': 200
-              }
-
-          def put_item(table_name, item):
-              try:
-                  ddb_client.put_item(
-                      TableName=table_name,
-                      Item=item
-                  )
-                  logger.info(
-                      "Connection ID added to table: %s",
-                      json.dumps(item)
-                  )
-              except ClientError as err:
-                  logger.error(
-                      "Couldn't add item %s to table %s. Here's why: %s: %s",
-                      json.dumps(item),
-                      table_name,
-                      err.response["Error"]["Code"],
-                      err.response["Error"]["Message"],
-                  )
-                  raise
+                  logger.error("Failed to store connection ID: %s", e)
+                  return {'statusCode': 500}
       Role:
         Fn::GetAtt:
           - ConnectHandlerServiceRole
@@ -235,241 +220,6 @@ Resources:
     DependsOn:
       - DisconnectHandlerServiceRoleDefaultPolicy
       - DisconnectHandlerServiceRole
-  SendMessageHandlerServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Action: sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-        Version: "2012-10-17"
-      ManagedPolicyArns:
-        - Fn::Join:
-            - ""
-            - - "arn:"
-              - Ref: AWS::Partition
-              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-  SendMessageHandlerServiceRoleDefaultPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyDocument:
-        Statement:
-          - Action:
-              - dynamodb:BatchGetItem
-              - dynamodb:GetRecords
-              - dynamodb:GetShardIterator
-              - dynamodb:Query
-              - dynamodb:GetItem
-              - dynamodb:Scan
-              - dynamodb:ConditionCheckItem
-              - dynamodb:DescribeTable
-            Effect: Allow
-            Resource:
-              - Fn::GetAtt:
-                  - ConnectionsTable
-                  - Arn
-              - Ref: AWS::NoValue
-        Version: "2012-10-17"
-      PolicyName: SendMessageHandlerServiceRoleDefaultPolicy
-      Roles:
-        - Ref: SendMessageHandlerServiceRole
-  SendMessageHandler:
-    Type: AWS::Lambda::Function
-    Properties:
-      Code:
-        ZipFile: |-
-          import json
-          import logging
-          import os
-          import boto3
-          from botocore.exceptions import ClientError
-
-          logger = logging.getLogger()
-          logger.setLevel("INFO")
-
-          ddb_client = boto3.client('dynamodb')
-
-          def lambda_handler(event, context):
-              logger.info("Lambda triggered with event: %s", json.dumps(event))
-              try:
-                  if isinstance(event, str):
-                      event = json.loads(event)
-                  if 'body' in event:
-                      body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
-                  else:
-                      body = event
-                  logger.info("Parsed body: %s", json.dumps(body))
-
-                  message = body.get("message")
-                  apigw_endpoint = body.get("apigw_endpoint")
-
-                  if not message or not apigw_endpoint:
-                      return {
-                          "statusCode": 400,
-                          "body": json.dumps({"error": "Missing message or apigw_endpoint"})
-                      }
-
-                  logger.info("Scanning table %s for connection IDs...", os.environ['TABLE_NAME'])
-                  connection_ids = scan_table(os.environ['TABLE_NAME'])
-                  logger.info("Found %d connections", len(connection_ids['Items']))
-              except Exception as e:
-                  logger.error("Error preparing message dispatch: %s", e)
-                  return {
-                      'statusCode': 500,
-                      'body': json.dumps({"error": str(e)})
-                  }
-
-              apigateway_client = boto3.client(
-                  'apigatewaymanagementapi',
-                  endpoint_url=apigw_endpoint
-              )
-
-              for connection_id in connection_ids['Items']:
-                  try:
-                      send_message(
-                          apigateway_client,
-                          connection_id['connectionId']['S'],
-                          message
-                      )
-                  except Exception as e:
-                      logger.error("Sending message to connection ID %s failed: %s", connection_id, e)
-
-              return {
-                  'statusCode': 200,
-                  'body': json.dumps({"status": "Message sent"})
-              }
-
-          def scan_table(table_name):
-              try:
-                  response = ddb_client.scan(TableName=table_name)
-                  logger.info("Scanned table: %s", table_name)
-                  return response
-              except ClientError as err:
-                  logger.error("Couldn't scan table %s: %s", table_name, err)
-                  raise
-
-          def send_message(apigateway_client, connection_id, message):
-              try:
-                  response = apigateway_client.post_to_connection(
-                      Data=message.encode('utf-8'),
-                      ConnectionId=connection_id
-                  )
-                  logger.info("Message sent: %s", response)
-              except ClientError as err:
-                  logger.error("Failed to send to %s: %s", connection_id, err)
-                  raise
-      Role:
-        Fn::GetAtt:
-          - SendMessageHandlerServiceRole
-          - Arn
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Ref: ConnectionsTable
-      Handler: index.lambda_handler
-      Runtime: python3.12
-    DependsOn:
-      - SendMessageHandlerServiceRoleDefaultPolicy
-      - SendMessageHandlerServiceRole
-  SendDirectHandlerServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Action: sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-        Version: "2012-10-17"
-      ManagedPolicyArns:
-        - Fn::Join:
-            - ""
-            - - "arn:"
-              - Ref: AWS::Partition
-              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-  SendDirectHandlerServiceRoleDefaultPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyDocument:
-        Statement:
-          - Action:
-              - dynamodb:BatchGetItem
-              - dynamodb:GetRecords
-              - dynamodb:GetShardIterator
-              - dynamodb:Query
-              - dynamodb:GetItem
-              - dynamodb:Scan
-              - dynamodb:ConditionCheckItem
-              - dynamodb:DescribeTable
-            Effect: Allow
-            Resource:
-              - Fn::GetAtt:
-                  - ConnectionsTable
-                  - Arn
-              - Ref: AWS::NoValue
-        Version: "2012-10-17"
-      PolicyName: SendDirectHandlerServiceRoleDefaultPolicy
-      Roles:
-        - Ref: SendDirectHandlerServiceRole
-  SendDirectHandler:
-    Type: AWS::Lambda::Function
-    Properties:
-      Code:
-        ZipFile: |-
-          import boto3
-          import json
-          import logging
-
-          logger = logging.getLogger()
-          logger.setLevel(logging.INFO)
-
-          def lambda_handler(event, context):
-              try:
-                  logger.info("Received event: %s", json.dumps(event))
-                  body = json.loads(event.get("body", '{}'))
-
-                  target_id = body.get("connectionId")
-                  operation_type = body.get("operationType")
-                  msg = body.get("message")
-
-                  if not target_id or not operation_type:
-                      return {"statusCode": 400, "body": json.dumps({"error": "Missing connectionId or operationType"})}
-
-                  domain = event["requestContext"]["domainName"]
-                  stage = event["requestContext"]["stage"]
-                  endpoint_url = f"https://{domain}/{stage}"
-
-                  client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint_url)
-
-                  payload = {
-                      "operationType": operation_type,
-                      "message": msg
-                  }
-
-                  client.post_to_connection(
-                      ConnectionId=target_id,
-                      Data=json.dumps(payload).encode('utf-8')
-                  )
-
-                  return {"statusCode": 200, "body": "Message sent"}
-              except Exception as e:
-                  logger.error("Failed to send message: %s", e)
-                  return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
-      Role:
-        Fn::GetAtt:
-          - SendDirectHandlerServiceRole
-          - Arn
-      Environment:
-        Variables:
-          TABLE_NAME:
-            Ref: ConnectionsTable
-      Handler: index.lambda_handler
-      Runtime: python3.12
-    DependsOn:
-      - SendDirectHandlerServiceRoleDefaultPolicy
-      - SendDirectHandlerServiceRole
   GetConnectionIdHandlerServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -541,9 +291,8 @@ Resources:
         Version: "2012-10-17"
       PolicyName: manageConnections7F91357B
       Roles:
-        - Ref: SendMessageHandlerServiceRole
-        - Ref: SendDirectHandlerServiceRole
         - Ref: GetConnectionIdHandlerServiceRole
+        - Ref: SendServerHandlerServiceRole
   WebSocketApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
@@ -555,7 +304,6 @@ Resources:
     DependsOn:
       - ConnectRoute
       - DisconnectRoute
-      - MessageRoute
     Properties:
       ApiId: !Ref WebSocketApi
   WebSocketApiStage:
@@ -583,20 +331,6 @@ Resources:
     Properties:
       ApiId: !Ref WebSocketApi
       IntegrationType: MOCK
-  MessageIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SendMessageHandler.Arn}/invocations
-      IntegrationMethod: POST
-  DirectIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WebSocketApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SendDirectHandler.Arn}/invocations
-      IntegrationMethod: POST
   GetConnectionIdIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
@@ -625,20 +359,6 @@ Resources:
       RouteKey: "$default"
       AuthorizationType: NONE
       Target: !Sub integrations/${MockIntegration}
-  MessageRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "sendmessage"
-      AuthorizationType: NONE
-      Target: !Sub integrations/${MessageIntegration}
-  DirectRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WebSocketApi
-      RouteKey: "sendDirect"
-      AuthorizationType: NONE
-      Target: !Sub integrations/${DirectIntegration}
   GetConnectionIdRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -660,20 +380,6 @@ Resources:
       FunctionName: !GetAtt DisconnectHandler.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$disconnect
-  SendMessageLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt SendMessageHandler.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/sendmessage
-  SendDirectPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt SendDirectHandler.Arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/sendDirect
   GetConnectionIdPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -681,6 +387,128 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/getConnectionId
+  SendServerHandlerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  SendServerHandlerServiceRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:DescribeTable
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectionsTable
+                  - Arn
+      PolicyName: SendServerHandlerServiceRolePolicy
+      Roles:
+        - Ref: SendServerHandlerServiceRole
+  SendServerHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          import boto3
+          import json
+          import os
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          ddb = boto3.client("dynamodb")
+
+          def lambda_handler(event, context):
+              try:
+                  logger.info("Received event: %s", json.dumps(event))
+                  body = json.loads(event.get("body", '{}'))
+
+                  id = body.get("targetId")
+                  operation_type = body.get("operationType")
+                  msg = body.get("message")
+
+                  if not id or not operation_type:
+                      return {"statusCode": 400, "body": json.dumps({"error": "Missing Id or operationType"})}
+
+                  # Get connectionId by Id
+                  response = ddb.get_item(
+                      TableName=os.environ['TABLE_NAME'],
+                      Key={'id': {'S': id}}
+                  )
+
+                  if 'Item' not in response:
+                      return {"statusCode": 404, "body": json.dumps({"error": "Id not found"})}
+
+                  connection_id = response['Item']['connectionId']['S']
+
+                  domain = event["requestContext"]["domainName"]
+                  stage = event["requestContext"]["stage"]
+                  endpoint_url = f"https://{domain}/{stage}"
+
+                  client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint_url)
+
+                  payload = {
+                      "operationType": operation_type,
+                      "peerConnectionId": event["requestContext"]["connectionId"],
+                      "message": msg
+                  }
+
+                  client.post_to_connection(
+                      ConnectionId=connection_id,
+                      Data=json.dumps(payload).encode('utf-8')
+                  )
+
+                  return {"statusCode": 200, "body": "Message sent to CLI"}
+              except Exception as e:
+                  logger.error("Failed to send message to CLI: %s", e)
+                  return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+      Role: !GetAtt SendServerHandlerServiceRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ConnectionsTable
+      Handler: index.lambda_handler
+      Runtime: python3.12
+    DependsOn:
+      - SendServerHandlerServiceRole
+      - SendServerHandlerServiceRoleDefaultPolicy
+  SendServerIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SendServerHandler.Arn}/invocations
+      IntegrationMethod: POST
+  SendServerRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "sendServer"
+      AuthorizationType: NONE
+      Target: !Sub integrations/${SendServerIntegration}
+  SendServerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SendServerHandler.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/sendServer
 
 Outputs:
   ConnectHandlerFunction:
@@ -689,9 +517,6 @@ Outputs:
   DisconnectHandlerFunction:
     Description: Lambda function for the $disconnect route of the WebSocket API
     Value: !GetAtt 'DisconnectHandler.Arn'
-  SendMessageHandlerFunction:
-    Description: Lambda function for the sendMessage route of the WebSocket API
-    Value: !GetAtt 'SendMessageHandler.Arn'
   WebSocketApiId:
     Description: "ID of the WebSocket API"
     Value: !Ref WebSocketApi

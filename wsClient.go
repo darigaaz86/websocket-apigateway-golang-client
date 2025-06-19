@@ -34,7 +34,7 @@ type SigningPayload struct {
 	Signature string `json:"signature"`
 }
 
-const wsURL = "wss://bo1s63drod.execute-api.ap-southeast-1.amazonaws.com/production/"
+const wsURL = "wss://izu0a6unlg.execute-api.ap-southeast-1.amazonaws.com/production/"
 
 func main() {
 	for {
