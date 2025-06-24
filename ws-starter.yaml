@@ -73,32 +73,55 @@ Resources:
           logger.setLevel("INFO")
 
           ddb_client = boto3.client('dynamodb')
+          CONNECTION_SET_KEY = 'activeConnections'
 
           def lambda_handler(event, context):
               try:
                   params = event.get('queryStringParameters') or {}
+                  conn_id = event['requestContext']['connectionId']
+                  updates = {}
+
                   if params.get('type') == "cli" and params.get('cliId'):
-                      ddb_client.put_item(
-                          TableName=os.environ['TABLE_NAME'],
-                          Item={
-                              'id': {'S': params['cliId']},
-                              'connectionId': {'S': event['requestContext']['connectionId']}
-                          }
-                      )
-                      logger.info("Stored: %s", json.dumps(params))
+                      updates[params['cliId']] = conn_id
+
                   if params.get('type') == "mpc" and params.get('mpcId'):
-                      ddb_client.put_item(
-                          TableName=os.environ['TABLE_NAME'],
-                          Item={
-                              'id': {'S': params['mpcId']},
-                              'connectionId': {'S': event['requestContext']['connectionId']}
-                          }
-                      )
-                      logger.info("Stored: %s", json.dumps(params))
+                      updates[params['mpcId']] = conn_id
+
+                  if not updates:
+                      logger.info("No valid parameters provided.")
+                      return {'statusCode': 400, 'body': 'Missing cliId or mpcId'}
+
+                  # Step 1: Ensure "items" map exists
+                  ddb_client.update_item(
+                      TableName=os.environ['TABLE_NAME'],
+                      Key={"id": {"S": CONNECTION_SET_KEY}},
+                      UpdateExpression="SET #items = if_not_exists(#items, :emptyMap)",
+                      ExpressionAttributeNames={"#items": "items"},
+                      ExpressionAttributeValues={":emptyMap": {"M": {}}}
+                  )
+
+                  # Step 2: Update items.<id> = conn_id
+                  update_expr = "SET " + ", ".join([f"#items.#k{i} = :v{i}" for i in range(len(updates))])
+                  expr_attr_names = {"#items": "items"}
+                  expr_attr_values = {}
+
+                  for i, (k, v) in enumerate(updates.items()):
+                      expr_attr_names[f"#k{i}"] = k
+                      expr_attr_values[f":v{i}"] = {"S": v}
+
+                  ddb_client.update_item(
+                      TableName=os.environ['TABLE_NAME'],
+                      Key={"id": {"S": CONNECTION_SET_KEY}},
+                      UpdateExpression=update_expr,
+                      ExpressionAttributeNames=expr_attr_names,
+                      ExpressionAttributeValues=expr_attr_values,
+                  )
+
+                  logger.info("Updated connection mapping: %s", json.dumps(updates))
                   return {'statusCode': 200}
               except Exception as e:
-                  logger.error("Failed to store connection ID: %s", e)
-                  return {'statusCode': 500}
+                  logger.error("Failed to update connections map: %s", e)
+                  return {'statusCode': 500, 'body': str(e)}
       Role:
         Fn::GetAtt:
           - ConnectHandlerServiceRole
@@ -165,48 +188,52 @@ Resources:
           logger.setLevel("INFO")
 
           ddb_client = boto3.client('dynamodb')
+          CONNECTION_SET_KEY = 'activeConnections'
 
           def lambda_handler(event, context):
               try:
-                  item = {
-                      'connectionId': {
-                          'S': event['requestContext']['connectionId']
-                      }
-                  }
-                  
-                  delete_item(
-                      table_name=os.environ['TABLE_NAME'],
-                      item=item
-                  )
-              except Exception as e:
-                  logger.error("Something went wrong with deleting the item from the table! Here's what: %s", e)
-                  return {
-                      'statusCode': 500
-                  }
-              
-              return {
-                  'statusCode': 200
-              }
+                  conn_id = event['requestContext']['connectionId']
+                  logger.info("Disconnecting connectionId: %s", conn_id)
 
-          def delete_item(table_name, item):
-              try:
-                  ddb_client.delete_item(
-                      TableName=table_name,
-                      Key=item
+                  # Get the current items map
+                  response = ddb_client.get_item(
+                      TableName=os.environ['TABLE_NAME'],
+                      Key={"id": {"S": CONNECTION_SET_KEY}},
+                      ProjectionExpression="items"
                   )
-                  logger.info(
-                      "Connection ID removed from table: %s",
-                      json.dumps(item)
+
+                  if 'Item' not in response or 'items' not in response['Item']:
+                      logger.warning("No active connections found.")
+                      return {'statusCode': 200}
+
+                  items = response['Item']['items']['M']
+
+                  # Find all keys that have this conn_id as value
+                  keys_to_remove = [k for k, v in items.items() if v['S'] == conn_id]
+
+                  if not keys_to_remove:
+                      logger.info("No matching connectionId found.")
+                      return {'statusCode': 200}
+
+                  # Build remove expressions
+                  update_expr = "REMOVE " + ", ".join([f"#items.#k{i}" for i in range(len(keys_to_remove))])
+                  expr_attr_names = {"#items": "items"}
+                  for i, key in enumerate(keys_to_remove):
+                      expr_attr_names[f"#k{i}"] = key
+
+                  ddb_client.update_item(
+                      TableName=os.environ['TABLE_NAME'],
+                      Key={"id": {"S": CONNECTION_SET_KEY}},
+                      UpdateExpression=update_expr,
+                      ExpressionAttributeNames=expr_attr_names
                   )
-              except ClientError as err:
-                  logger.error(
-                      "Couldn't delete item %s from table %s. Here's why: %s: %s",
-                      json.dumps(item),
-                      table_name,
-                      err.response["Error"]["Code"],
-                      err.response["Error"]["Message"],
-                  )
-                  raise
+
+                  logger.info("Removed keys: %s", keys_to_remove)
+                  return {'statusCode': 200}
+
+              except Exception as e:
+                  logger.error("Failed to clean up disconnected ID: %s", e)
+                  return {'statusCode': 500, 'body': str(e)}
       Role:
         Fn::GetAtt:
           - DisconnectHandlerServiceRole
@@ -411,6 +438,8 @@ Resources:
         Statement:
           - Effect: Allow
             Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
               - dynamodb:GetItem
               - dynamodb:DescribeTable
             Resource:
@@ -434,50 +463,116 @@ Resources:
           logger.setLevel(logging.INFO)
 
           ddb = boto3.client("dynamodb")
+          CONNECTION_SET_KEY = 'activeConnections'
+          MAPPING_SET_KEY = "activeMapping"          
 
           def lambda_handler(event, context):
               try:
-                  logger.info("Received event: %s", json.dumps(event))
-                  body = json.loads(event.get("body", '{}'))
-
-                  id = body.get("targetId")
-                  operation_type = body.get("operationType")
-                  msg = body.get("message")
-
-                  if not id or not operation_type:
-                      return {"statusCode": 400, "body": json.dumps({"error": "Missing Id or operationType"})}
-
-                  # Get connectionId by Id
-                  response = ddb.get_item(
-                      TableName=os.environ['TABLE_NAME'],
-                      Key={'id': {'S': id}}
+                  ddb.put_item(
+                      TableName=os.environ["TABLE_NAME"],
+                      Item={
+                          "id": {"S": MAPPING_SET_KEY},
+                          "mapping": {"M": {}}
+                      },
+                      ConditionExpression="attribute_not_exists(id)"
                   )
+                  logger.info("Initialized activeMapping item")
+              except ddb.exceptions.ConditionalCheckFailedException:
+                  pass  # already exists
 
-                  if 'Item' not in response:
-                      return {"statusCode": 404, "body": json.dumps({"error": "Id not found"})}
+              try:
+                  logger.info("Received event: %s", json.dumps(event))
 
-                  connection_id = response['Item']['connectionId']['S']
+                  body = json.loads(event.get("body", '{}'))
+                  operation_type = body.get("operationType")
+                  cli_to_mpc = body.get("cliToMpc")
+                  message = body.get("message")
 
+                  if not operation_type or not message:
+                      return {"statusCode": 400, "body": json.dumps({"error": "Missing OperationType or Message"})}
+
+                  # Step 1: If CliToMpc is present, update bidirectional mapping
+                  if cli_to_mpc:
+                      update_expr_parts = []
+                      expr_attr_names = {"#mapping": "mapping"}
+                      expr_attr_values = {}
+
+                      for i, (cli_id, mpc_id) in enumerate(cli_to_mpc.items()):
+                          # cli → mpc
+                          cli_key = f"#cli{i}"
+                          cli_val = f":mpc{i}"
+                          update_expr_parts.append(f"#mapping.{cli_key} = {cli_val}")
+                          expr_attr_names[cli_key] = cli_id
+                          expr_attr_values[cli_val] = {"S": mpc_id}
+
+                          # mpc → cli (reverse direction)
+                          mpc_key = f"#mpc{i}"
+                          mpc_val = f":cli{i}"
+                          update_expr_parts.append(f"#mapping.{mpc_key} = {mpc_val}")
+                          expr_attr_names[mpc_key] = mpc_id
+                          expr_attr_values[mpc_val] = {"S": cli_id}
+
+                      update_expr = "SET " + ", ".join(update_expr_parts)
+
+                      ddb.update_item(
+                          TableName=os.environ["TABLE_NAME"],
+                          Key={"id": {"S": MAPPING_SET_KEY}},
+                          UpdateExpression=update_expr,
+                          ExpressionAttributeNames=expr_attr_names,
+                          ExpressionAttributeValues=expr_attr_values,
+                      )
+                      logger.info("Updated bidirectional CliToMpc mapping: %s", cli_to_mpc)
+
+                  # Step 2: Lookup mapping to get target ID → then lookup connectionId
+                  source_id = body.get("sourceId")  # required to determine peer
+                  if not source_id:
+                      return {"statusCode": 400, "body": json.dumps({"error": "Missing SourceId"})}
+
+                  # Fetch mapping
+                  response = ddb.get_item(
+                      TableName=os.environ["TABLE_NAME"],
+                      Key={"id": {"S": MAPPING_SET_KEY}},
+                      ProjectionExpression="mapping"
+                  )
+                  mapping = response.get("Item", {}).get("mapping", {}).get("M", {})
+
+                  peer_id = mapping.get(source_id, {}).get("S")
+                  if not peer_id:
+                      return {"statusCode": 404, "body": json.dumps({"error": f"No peer found for {source_id}"})}
+                  logger.info("Get peer_id: %s", peer_id)
+
+                  # Fetch peer connectionId
+                  conn_response = ddb.get_item(
+                      TableName=os.environ["TABLE_NAME"],
+                      Key={"id": {"S": CONNECTION_SET_KEY}},
+                      ProjectionExpression="#items",
+                      ExpressionAttributeNames={"#items": "items"}
+                  )
+                  connection_id = conn_response.get("Item", {}).get("items", {}).get("M", {}).get(peer_id, {}).get("S")
+                  if not connection_id:
+                      return {"statusCode": 404, "body": json.dumps({"error": f"No connectionId found for peer {peer_id}"})}
+                  logger.info("Get connection_id: %s", connection_id)
+
+                  # Step 3: Send message
                   domain = event["requestContext"]["domainName"]
                   stage = event["requestContext"]["stage"]
                   endpoint_url = f"https://{domain}/{stage}"
-
-                  client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint_url)
+                  apigw = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint_url)
 
                   payload = {
                       "operationType": operation_type,
-                      "peerConnectionId": event["requestContext"]["connectionId"],
-                      "message": msg
+                      "from": source_id,
+                      "message": message
                   }
 
-                  client.post_to_connection(
+                  apigw.post_to_connection(
                       ConnectionId=connection_id,
-                      Data=json.dumps(payload).encode('utf-8')
+                      Data=json.dumps(payload).encode("utf-8")
                   )
-
-                  return {"statusCode": 200, "body": "Message sent to CLI"}
+                  logger.info("Sent payload to %s: %s", peer_id, payload)
+                  return {"statusCode": 200, "body": "Message sent successfully"}
               except Exception as e:
-                  logger.error("Failed to send message to CLI: %s", e)
+                  logger.error("sendServer failed: %s", e)
                   return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
       Role: !GetAtt SendServerHandlerServiceRole.Arn
       Environment:

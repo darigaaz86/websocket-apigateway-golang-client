@@ -13,8 +13,7 @@ A CloudFormation template that creates:
 - Four **Lambda functions**:
   - `$connect`: Adds a new connection ID to DynamoDB and optionally sends it to the client
   - `$disconnect`: Removes the connection ID when the client disconnects
-  - `sendMessage`: Scans all active connections and sends a broadcast message
-  - `sendDirect`: Sends a direct message to a specific connection ID
+  - `sendServer`: Send message to the peer server
 - **IAM roles** and policies for the Lambda functions
 
 ### 2. `main.go`
@@ -49,8 +48,7 @@ aws cloudformation deploy \
 |-------------------|-----------------------------------|
 | `$connect`        | ConnectHandler Lambda ARN         |
 | `$disconnect`     | DisconnectHandler Lambda ARN      |
-| `sendMessage`     | SendMessageHandler Lambda ARN     |
-| `sendDirect`      | SendDirectHandler Lambda ARN      |
+| `sendServer`      | SendServerHandler Lambda ARN      |
 | `getConnectionId` | GetConnectionIdHandler Lambda ARN |
 
 3. Deploy the WebSocket API to a stage (e.g., `production`) and grab the **WebSocket endpoint URL**.
@@ -68,20 +66,73 @@ aws cloudformation deploy \
 
    The server will reply with your connection ID. You can share it with another client for direct messaging.
 
-2. ✉️ **Send a direct message**  
-   Once you have another client’s connection ID, use the following format:
+---
 
-   ```json
-   {
-     "action": "sendDirect",
-     "connectionId": "JDH-3ejISQ0CFlw=",
-     "operationType": "signing",
-     "message": {
-       "txId": "abc123",
-       "signature": "0xdeadbeef"
-     }
-   }
-   ```
+## 💻 Example Usage with wscat
+
+### 🧪 Step-by-step:
+
+#### 1️⃣ Client 1 connects as a `cli` server:
+```bash
+wscat -c 'wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123' -H "Authorization: Allow"
+```
+
+#### 2️⃣ Client 2 connects as an `mpc` server:
+```bash
+wscat -c 'wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=IgniterC56D' -H "Authorization: Allow"
+```
+
+#### 3️⃣ Client 2 sends a message to Client 1:
+```json
+{
+  "action": "sendServer",
+  "sourceId": "IgniterC56D",
+  "cliToMpc": { "cli123": "IgniterC56D" },
+  "operationType": "signing",
+  "message": {
+    "txId": "abc123",
+    "signature": "0xdeadbeef"
+  }
+}
+```
+
+🔁 **Client 1 receives:**
+```json
+{
+  "operationType": "signing",
+  "from": "IgniterC56D",
+  "message": {
+    "txId": "abc123",
+    "signature": "0xdeadbeef"
+  }
+}
+```
+
+#### 4️⃣ Client 1 replies back to Client 2:
+```json
+{
+  "action": "sendServer",
+  "sourceId": "cli123",
+  "operationType": "fullSig",
+  "message": {
+    "txId": "abc123",
+    "signature": "0xdeadbeef"
+  }
+}
+```
+
+🔁 **Client 2 receives:**
+```json
+{
+  "operationType": "fullSig",
+  "from": "cli123",
+  "to": "IgniterC56D",
+  "message": {
+    "txId": "abc123",
+    "signature": "0xdeadbeef"
+  }
+}
+```
 
 ---
 
