@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gorilla/websocket"
 )
 
 type ConnectionInfoPayload struct {
@@ -16,15 +18,14 @@ type ConnectionInfoPayload struct {
 }
 
 type Message struct {
-	Action        string          `json:"action"`
-	SourceId      string          `json:"sourceId"`
+	Action        string            `json:"action"`
+	SourceId      string            `json:"sourceId"`
 	CliToMpc      map[string]string `json:"cliToMpc"`
-	OperationType string          `json:"operationType"` // e.g., "pairing", "signing"
-	Message       json.RawMessage `json:"message"`       // decode based on operationType
+	OperationType string            `json:"operationType"` // e.g., "pairing", "signing"
+	Message       json.RawMessage   `json:"message"`       // decode based on operationType
 }
 
 // Define payloads
-
 type PairingPayload struct {
 	DeviceID string `json:"deviceId"`
 	User     string `json:"user"`
@@ -35,7 +36,12 @@ type SigningPayload struct {
 	Signature string `json:"signature"`
 }
 
-const wsURL = "wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123"
+// WebSocket endpoint
+const (
+	rawURL             = "wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production"
+	allowInsecureTLS   = false // ⚠️ Set true only for development with self-signed certs
+	connectionKeepTime = 4 * time.Minute
+)
 
 func main() {
 	for {
@@ -48,26 +54,44 @@ func main() {
 }
 
 func connectAndListen() error {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid websocket URL: %w", err)
+	}
+
+	// Add query parameters
+	q := u.Query()
+	q.Set("type", "cli")
+	q.Set("cliId", "cli123")
+	u.RawQuery = q.Encode()
+
+	// Setup custom TLS config (if needed)
+	dialer := websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: allowInsecureTLS},
+	}
+
+	// Connect
+	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("WebSocket connect error: %w", err)
 	}
 	defer func() {
-		_ = conn.Close(websocket.StatusNormalClosure, "closing connection")
+		_ = conn.Close()
 		log.Println("❎ Connection closed")
 	}()
 
 	log.Println("✅ Connected to WebSocket server")
 
-	// 🔁 Keep connection alive
+	// Keepalive pinger
 	go func() {
-		ticker := time.NewTicker(4 * time.Minute)
+		ticker := time.NewTicker(connectionKeepTime)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			err := conn.Ping(ctx)
+			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(10*time.Second))
 			if err != nil {
 				log.Printf("⚠️ Ping failed: %v", err)
 				return
@@ -76,8 +100,9 @@ func connectAndListen() error {
 		}
 	}()
 
+	// Read loop
 	for {
-		_, data, err := conn.Read(ctx)
+		_, data, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read error: %w", err)
 		}
