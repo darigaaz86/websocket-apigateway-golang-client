@@ -17,7 +17,8 @@ type ConnectionInfoPayload struct {
 
 type Message struct {
 	Action        string          `json:"action"`
-	ConnectionID  string          `json:"connectionId"`
+	SourceId      string          `json:"sourceId"`
+	CliToMpc      map[string]string `json:"cliToMpc"`
 	OperationType string          `json:"operationType"` // e.g., "pairing", "signing"
 	Message       json.RawMessage `json:"message"`       // decode based on operationType
 }
@@ -34,7 +35,7 @@ type SigningPayload struct {
 	Signature string `json:"signature"`
 }
 
-const wsURL = "wss://izu0a6unlg.execute-api.ap-southeast-1.amazonaws.com/production/"
+const wsURL = "wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123"
 
 func main() {
 	for {
