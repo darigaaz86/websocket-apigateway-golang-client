@@ -190,3 +190,81 @@ aws cloudformation delete-stack --stack-name websocket-chat-demo
 ## 📝 License
 
 This project is provided for educational/demo purposes and is not production-hardened. Use at your own risk.
+
+---
+
+## 📋 Real Interaction Example
+
+### 🔌 Client1 connects as `cli` server by launch wsClient.go
+```bash
+go run wsClient.go
+```
+
+### 🔌 Client2 connects:
+```bash
+wscat -c 'wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=IgniterC56D' -H "Authorization: Allow"
+```
+
+### 📨 Client2 sends:
+```json
+{
+  "action": "sendServer",
+  "sourceId": "IgniterC56D",
+  "cliToMpc": { "cli123": "IgniterC56D" },
+  "operationType": "PartialSig",
+  "message": {
+    "accountHash": "accountHash",
+    "teamId": "teamId",
+    "transactionId": "transactionId",
+    "partialSig": "partialSig"
+  }
+}
+```
+
+### 📥 Client1 receives:
+```json
+{
+  "operationType": "PartialSig",
+  "from": "IgniterC56D",
+  "message": {
+    "accountHash": "accountHash",
+    "teamId": "teamId",
+    "transactionId": "transactionId",
+    "partialSig": "partialSig"
+  }
+}
+```
+
+### 📤 Client1 auto sends:
+```json
+{
+  "action": "sendServer",
+  "sourceId": "cli123",
+  "operationType": "FullSig",
+  "message": {
+    "accountHash": "accountHash",
+    "signatureR": "r",
+    "signatureS": "s",
+    "signatureV": "v",
+    "teamId": "teamId",
+    "transactionId": "transactionId"
+  }
+}
+```
+
+### 📬 Client2 receives:
+```json
+{
+  "operationType": "FullSig",
+  "from": "cli123",
+  "to": "IgniterC56D",
+  "message": {
+    "accountHash": "accountHash",
+    "signatureR": "r",
+    "signatureS": "s",
+    "signatureV": "v",
+    "teamId": "teamId",
+    "transactionId": "transactionId"
+  }
+}
+```

@@ -32,13 +32,15 @@ type PairingPayload struct {
 }
 
 type SigningPayload struct {
-	TxID      string `json:"txId"`
-	Signature string `json:"signature"`
+	AccountHash   string `json:"accountHash"`
+	TeamId        string `json:"teamId"`
+	TransactionId string `json:"transactionId"`
+	PartialSig    string `json:"partialSig"`
 }
 
 // WebSocket endpoint
 const (
-	rawURL             = "wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production"
+	rawURL             = "wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123"
 	allowInsecureTLS   = false // ⚠️ Set true only for development with self-signed certs
 	connectionKeepTime = 4 * time.Minute
 )
@@ -63,10 +65,10 @@ func connectAndListen() error {
 	}
 
 	// Add query parameters
-	q := u.Query()
-	q.Set("type", "cli")
-	q.Set("cliId", "cli123")
-	u.RawQuery = q.Encode()
+	// q := u.Query()
+	// q.Set("type", "cli")
+	// q.Set("cliId", "cli123")
+	// u.RawQuery = q.Encode()
 
 	// Setup custom TLS config (if needed)
 	dialer := websocket.Dialer{
@@ -122,13 +124,33 @@ func connectAndListen() error {
 			}
 			fmt.Printf("🔗 Pairing: device=%s user=%s\n", payload.DeviceID, payload.User)
 
-		case "signing":
+		case "PartialSig":
 			var payload SigningPayload
 			if err := json.Unmarshal(msg.Message, &payload); err != nil {
 				log.Printf("❌ SigningPayload unmarshal error: %v", err)
 				continue
 			}
-			fmt.Printf("✍️ Signing: txId=%s signature=%s\n", payload.TxID, payload.Signature)
+			fmt.Printf("✍️ Signing input: %v\n", payload)
+
+			msg := map[string]string{
+				"transactionId": payload.TransactionId,
+				"teamId":        payload.TeamId,
+				"accountHash":   payload.AccountHash,
+				"signatureR":    "r",
+				"signatureS":    "s",
+				"signatureV":    "v",
+			}
+			msgBytes, _ := json.Marshal(msg)
+			response := Message{
+				Action:        "sendServer",
+				SourceId:      "cli123",
+				OperationType: "FullSig",
+				Message: msgBytes,
+			}
+
+			if err := conn.WriteJSON(response); err != nil {
+				log.Printf("❌ Failed to send FullSig: %v", err)
+			}
 
 		default:
 			log.Printf("⚠️ Unknown operation type: %s", msg.OperationType)
