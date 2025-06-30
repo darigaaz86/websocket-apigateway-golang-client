@@ -136,9 +136,9 @@ func connectAndListen() error {
 				"transactionId": payload.TransactionId,
 				"teamId":        payload.TeamId,
 				"accountHash":   payload.AccountHash,
-				"signatureR":    "r",
-				"signatureS":    "s",
-				"signatureV":    "v",
+				"signatureR":    "0xa1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8090a1b2c3d4e5f6071",
+				"signatureS":    "0x1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8090a1b2c3d4e5f60718",
+				"signatureV":    "27",
 			}
 			msgBytes, _ := json.Marshal(msg)
 			response := Message{
