@@ -74,12 +74,12 @@ aws cloudformation deploy \
 
 #### 1️⃣ Client 1 connects as a `cli` server:
 ```bash
-wscat -c 'wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123' -H "Authorization: Allow"
+wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123' -H "Authorization: Allow"
 ```
 
 #### 2️⃣ Client 2 connects as an `mpc` server:
 ```bash
-wscat -c 'wss://eqm3whvj69.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=IgniterC56D' -H "Authorization: Allow"
+wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=IgniterC56D' -H "Authorization: Allow"
 ```
 
 #### 3️⃣ Client 2 sends a message to Client 1:
