@@ -74,20 +74,20 @@ aws cloudformation deploy \
 
 #### 1️⃣ Client 1 connects as a `cli` server:
 ```bash
-wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=cli123' -H "Authorization: Allow"
+wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=cli&cliId=6f3a8b0b-1f7f-4681-ae94-2b213f95f8a0' -H "Authorization: Allow"
 ```
 
 #### 2️⃣ Client 2 connects as an `mpc` server:
 ```bash
-wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=IgniterC56D' -H "Authorization: Allow"
+wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?type=mpc&mpcId=b61c9f9e-13b8-4c87-a750-16e1cfdabe9c' -H "Authorization: Allow"
 ```
 
 #### 3️⃣ Client 2 sends a message to Client 1:
 ```json
 {
   "action": "sendServer",
-  "sourceId": "IgniterC56D",
-  "cliToMpc": { "cli123": "IgniterC56D" },
+  "sourceId": "b61c9f9e-13b8-4c87-a750-16e1cfdabe9c",
+  "cliToMpc": { "6f3a8b0b-1f7f-4681-ae94-2b213f95f8a0": "b61c9f9e-13b8-4c87-a750-16e1cfdabe9c" },
   "operationType": "signing",
   "message": {
     "txId": "abc123",
@@ -112,7 +112,7 @@ wscat -c 'wss://6we5i7fnq5.execute-api.ap-southeast-1.amazonaws.com/production?t
 ```json
 {
   "action": "sendServer",
-  "sourceId": "cli123",
+  "sourceId": "6f3a8b0b-1f7f-4681-ae94-2b213f95f8a0",
   "operationType": "fullSig",
   "message": {
     "txId": "abc123",
